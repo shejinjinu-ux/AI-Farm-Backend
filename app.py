@@ -5,10 +5,10 @@ from pydantic import BaseModel
 import joblib
 import pandas as pd
 import urllib.request
+import urllib.parse
 import json
 import csv
 import os
-import requests
 from functools import lru_cache
 
 
@@ -33,30 +33,48 @@ app.add_middleware(
 
 
 # =========================================================
-# LOAD ML MODEL
+# FILE PATHS
 # =========================================================
 
-model = joblib.load("crop_yield_model_small.pkl")
-preprocessor = joblib.load("preprocessor.pkl")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+MODEL_PATH = os.path.join(
+    BASE_DIR,
+    "crop_yield_model_small.pkl"
+)
 
-# =========================================================
-# LOCATION DATA
-# State -> District -> Village
-# =========================================================
+PREPROCESSOR_PATH = os.path.join(
+    BASE_DIR,
+    "preprocessor.pkl"
+)
 
 LOCATION_CSV = os.path.join(
-    os.path.dirname(__file__),
+    BASE_DIR,
     "location_data",
     "village-directory.csv"
 )
 
-location_rows = []
+
+# =========================================================
+# LOAD ML MODEL
+# =========================================================
+
+print("Loading ML model...")
+
+model = joblib.load(MODEL_PATH)
+
+print("Loading preprocessor...")
+
+preprocessor = joblib.load(PREPROCESSOR_PATH)
+
+print("ML model loaded successfully.")
 
 
-def load_location_data():
+# =========================================================
+# LOCATION CSV HELPER
+# =========================================================
 
-    global location_rows
+def location_file_exists():
 
     if not os.path.exists(LOCATION_CSV):
 
@@ -66,81 +84,101 @@ def load_location_data():
 
         print(LOCATION_CSV)
 
+        return False
+
+    return True
+
+
+def clean_row(row):
+
+    return {
+
+        "state_code":
+            row.get(
+                "State code",
+                ""
+            ).strip(),
+
+        "state":
+            row.get(
+                "State Name(In English)",
+                ""
+            ).strip(),
+
+        "district_code":
+            row.get(
+                "District code",
+                ""
+            ).strip(),
+
+        "district":
+            row.get(
+                "District Name(In English)",
+                ""
+            ).strip(),
+
+        "subdistrict_code":
+            row.get(
+                "Subdistrict code",
+                ""
+            ).strip(),
+
+        "subdistrict":
+            row.get(
+                "Subdistrict Name(In English)",
+                ""
+            ).strip(),
+
+        "village_code":
+            row.get(
+                "Village code",
+                ""
+            ).strip(),
+
+        "village":
+            row.get(
+                "Village Name(In English)",
+                ""
+            ).strip()
+    }
+
+
+# =========================================================
+# LOCATION CSV STREAM
+#
+# IMPORTANT:
+# We DO NOT load the entire 71 MB CSV into RAM.
+# The file is read one row at a time.
+# =========================================================
+
+def location_rows():
+
+    if not location_file_exists():
+
         return
 
-    print(
-        "Loading India village location data..."
-    )
+    try:
 
-    with open(
-        LOCATION_CSV,
-        "r",
-        encoding="utf-8-sig",
-        newline=""
-    ) as file:
+        with open(
+            LOCATION_CSV,
+            "r",
+            encoding="utf-8-sig",
+            newline="",
+            buffering=1024 * 1024
+        ) as file:
 
-        reader = csv.DictReader(file)
+            reader = csv.DictReader(file)
 
-        for row in reader:
+            for row in reader:
 
-            location_rows.append({
+                yield clean_row(row)
 
-                "state_code":
-                    row.get(
-                        "State code",
-                        ""
-                    ).strip(),
+    except Exception as e:
 
-                "state":
-                    row.get(
-                        "State Name(In English)",
-                        ""
-                    ).strip(),
-
-                "district_code":
-                    row.get(
-                        "District code",
-                        ""
-                    ).strip(),
-
-                "district":
-                    row.get(
-                        "District Name(In English)",
-                        ""
-                    ).strip(),
-
-                "subdistrict_code":
-                    row.get(
-                        "Subdistrict code",
-                        ""
-                    ).strip(),
-
-                "subdistrict":
-                    row.get(
-                        "Subdistrict Name(In English)",
-                        ""
-                    ).strip(),
-
-                "village_code":
-                    row.get(
-                        "Village code",
-                        ""
-                    ).strip(),
-
-                "village":
-                    row.get(
-                        "Village Name(In English)",
-                        ""
-                    ).strip()
-            })
-
-    print(
-        f"Loaded {len(location_rows)} village records"
-    )
-
-
-# Load location data when server starts
-load_location_data()
+        print(
+            "Location CSV read error:",
+            e
+        )
 
 
 # =========================================================
@@ -200,21 +238,36 @@ def health():
         "preprocessor":
             "preprocessor.pkl",
 
-        "location_records":
-            len(location_rows)
+        "location_data":
+            "streaming CSV",
+
+        "location_file_exists":
+            location_file_exists()
     }
 
 
 # =========================================================
 # GET ALL INDIA STATES / UNION TERRITORIES
+#
+# Memory safe:
+# Only unique state names are stored.
 # =========================================================
 
 @app.get("/locations/states")
 def get_states():
 
+    if not location_file_exists():
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail="Location CSV file not found."
+        )
+
     states = {}
 
-    for row in location_rows:
+    for row in location_rows():
 
         state = row["state"]
 
@@ -227,15 +280,19 @@ def get_states():
 
             states[key] = {
 
-                "name": state,
+                "name":
+                    state,
 
                 "code":
                     row["state_code"]
             }
 
     result = sorted(
+
         states.values(),
-        key=lambda x: x["name"]
+
+        key=lambda x:
+            x["name"].lower()
     )
 
     return {
@@ -257,16 +314,34 @@ def get_states():
 
 @app.get("/locations/districts")
 def get_districts(
+
     state: str
 ):
 
-    state_input = state.strip().lower()
+    if not location_file_exists():
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail="Location CSV file not found."
+        )
+
+    state_input = (
+        state.strip().lower()
+    )
 
     districts = {}
 
-    for row in location_rows:
+    for row in location_rows():
 
-        if row["state"].strip().lower() != state_input:
+        if (
+            row["state"]
+            .strip()
+            .lower()
+            != state_input
+        ):
+
             continue
 
         district = row["district"]
@@ -288,8 +363,11 @@ def get_districts(
             }
 
     result = sorted(
+
         districts.values(),
-        key=lambda x: x["name"]
+
+        key=lambda x:
+            x["name"].lower()
     )
 
     return {
@@ -314,9 +392,20 @@ def get_districts(
 
 @app.get("/locations/villages")
 def get_villages(
+
     state: str,
+
     district: str
 ):
+
+    if not location_file_exists():
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail="Location CSV file not found."
+        )
 
     state_input = (
         state.strip().lower()
@@ -328,7 +417,7 @@ def get_villages(
 
     villages = {}
 
-    for row in location_rows:
+    for row in location_rows():
 
         if (
             row["state"]
@@ -336,6 +425,7 @@ def get_villages(
             .lower()
             != state_input
         ):
+
             continue
 
         if (
@@ -344,6 +434,7 @@ def get_villages(
             .lower()
             != district_input
         ):
+
             continue
 
         village = row["village"]
@@ -352,7 +443,9 @@ def get_villages(
             continue
 
         key = (
+
             row["village_code"],
+
             village.lower()
         )
 
@@ -372,8 +465,11 @@ def get_villages(
         }
 
     result = sorted(
+
         villages.values(),
-        key=lambda x: x["name"]
+
+        key=lambda x:
+            x["name"].lower()
     )
 
     return {
@@ -398,26 +494,19 @@ def get_villages(
 # =========================================================
 # VILLAGE GEOCODING
 # =========================================================
-#
-# The village CSV contains:
-# State
-# District
-# Village
-#
-# It does NOT contain latitude / longitude.
-#
-# Therefore we use OpenStreetMap Nominatim to find
-# coordinates for the selected village.
-# =========================================================
 
-@lru_cache(maxsize=5000)
+@lru_cache(maxsize=500)
 def geocode_village(
+
     village: str,
+
     district: str,
+
     state: str
 ):
 
     query = (
+
         f"{village}, "
         f"{district}, "
         f"{state}, India"
@@ -425,37 +514,46 @@ def geocode_village(
 
     try:
 
-        response = requests.get(
+        encoded_query = urllib.parse.quote(
+            query
+        )
 
-            "https://nominatim.openstreetmap.org/search",
+        url = (
 
-            params={
+            "https://nominatim.openstreetmap.org/search"
 
-                "q":
-                    query,
+            f"?q={encoded_query}"
 
-                "format":
-                    "json",
+            "&format=json"
 
-                "limit":
-                    1,
+            "&limit=1"
 
-                "countrycodes":
-                    "in"
-            },
+            "&countrycodes=in"
+        )
+
+        request = urllib.request.Request(
+
+            url,
 
             headers={
 
                 "User-Agent":
                     "AI-Farm-Assistant/1.0"
-            },
-
-            timeout=10
+            }
         )
 
-        response.raise_for_status()
+        with urllib.request.urlopen(
 
-        data = response.json()
+            request,
+
+            timeout=10
+
+        ) as response:
+
+            data = json.loads(
+
+                response.read().decode()
+            )
 
         if not data:
 
@@ -564,7 +662,9 @@ def get_village_location(
 
 @app.get("/weather")
 def get_weather(
+
     latitude: float,
+
     longitude: float
 ):
 
@@ -596,11 +696,15 @@ def get_weather(
         )
 
         with urllib.request.urlopen(
+
             url,
+
             timeout=10
+
         ) as response:
 
             weather_data = json.loads(
+
                 response.read().decode()
             )
 
@@ -709,11 +813,15 @@ def get_last_7_days_rainfall(
         )
 
         with urllib.request.urlopen(
+
             url,
+
             timeout=10
+
         ) as response:
 
             rainfall_data = json.loads(
+
                 response.read().decode()
             )
 
@@ -735,7 +843,9 @@ def get_last_7_days_rainfall(
         rainfall_history = []
 
         for date, amount in zip(
+
             dates,
+
             rainfall_values
         ):
 
@@ -861,11 +971,15 @@ def get_weather_forecast(
         )
 
         with urllib.request.urlopen(
+
             url,
+
             timeout=10
+
         ) as response:
 
             forecast_data = json.loads(
+
                 response.read().decode()
             )
 
@@ -1012,10 +1126,6 @@ def get_weather_forecast(
             )
 
 
-        # =================================================
-        # RESPONSE
-        # =================================================
-
         return {
 
             "success":
@@ -1097,15 +1207,11 @@ class PredictionRequest(BaseModel):
 
 @app.post("/predict")
 def predict(
+
     data: PredictionRequest
 ):
 
     try:
-
-        # -------------------------------------------------
-        # CREATE DATAFRAME
-        # EXACT TRAINING COLUMN ORDER
-        # -------------------------------------------------
 
         input_data = pd.DataFrame([{
 
@@ -1153,31 +1259,33 @@ def predict(
         }])
 
 
-        # -------------------------------------------------
+        # =================================================
         # PREPROCESS
-        # -------------------------------------------------
+        # =================================================
 
         input_encoded = (
+
             preprocessor.transform(
                 input_data
             )
         )
 
 
-        # -------------------------------------------------
+        # =================================================
         # AI PREDICTION
-        # -------------------------------------------------
+        # =================================================
 
         predicted_yield = (
+
             model.predict(
                 input_encoded
             )[0]
         )
 
 
-        # -------------------------------------------------
+        # =================================================
         # TOTAL PRODUCTION
-        # -------------------------------------------------
+        # =================================================
 
         total_production = (
 
@@ -1187,9 +1295,9 @@ def predict(
         )
 
 
-        # -------------------------------------------------
+        # =================================================
         # RESPONSE
-        # -------------------------------------------------
+        # =================================================
 
         return {
 

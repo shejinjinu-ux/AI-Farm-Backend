@@ -1,10 +1,15 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 import joblib
 import pandas as pd
 import urllib.request
 import json
+import csv
+import os
+import requests
+from functools import lru_cache
 
 
 # =========================================================
@@ -36,6 +41,109 @@ preprocessor = joblib.load("preprocessor.pkl")
 
 
 # =========================================================
+# LOCATION DATA
+# State -> District -> Village
+# =========================================================
+
+LOCATION_CSV = os.path.join(
+    os.path.dirname(__file__),
+    "location_data",
+    "village-directory.csv"
+)
+
+location_rows = []
+
+
+def load_location_data():
+
+    global location_rows
+
+    if not os.path.exists(LOCATION_CSV):
+
+        print(
+            "WARNING: Location CSV not found:"
+        )
+
+        print(LOCATION_CSV)
+
+        return
+
+    print(
+        "Loading India village location data..."
+    )
+
+    with open(
+        LOCATION_CSV,
+        "r",
+        encoding="utf-8-sig",
+        newline=""
+    ) as file:
+
+        reader = csv.DictReader(file)
+
+        for row in reader:
+
+            location_rows.append({
+
+                "state_code":
+                    row.get(
+                        "State code",
+                        ""
+                    ).strip(),
+
+                "state":
+                    row.get(
+                        "State Name(In English)",
+                        ""
+                    ).strip(),
+
+                "district_code":
+                    row.get(
+                        "District code",
+                        ""
+                    ).strip(),
+
+                "district":
+                    row.get(
+                        "District Name(In English)",
+                        ""
+                    ).strip(),
+
+                "subdistrict_code":
+                    row.get(
+                        "Subdistrict code",
+                        ""
+                    ).strip(),
+
+                "subdistrict":
+                    row.get(
+                        "Subdistrict Name(In English)",
+                        ""
+                    ).strip(),
+
+                "village_code":
+                    row.get(
+                        "Village code",
+                        ""
+                    ).strip(),
+
+                "village":
+                    row.get(
+                        "Village Name(In English)",
+                        ""
+                    ).strip()
+            })
+
+    print(
+        f"Loaded {len(location_rows)} village records"
+    )
+
+
+# Load location data when server starts
+load_location_data()
+
+
+# =========================================================
 # HOME
 # =========================================================
 
@@ -43,16 +151,33 @@ preprocessor = joblib.load("preprocessor.pkl")
 def home():
 
     return {
-        "message": "AI Farm Backend is running!",
-        "model": "Random Forest - 50 Trees",
-        "status": "ready",
+
+        "message":
+            "AI Farm Backend is running!",
+
+        "model":
+            "Random Forest - 50 Trees",
+
+        "status":
+            "ready",
+
         "features": [
+
             "ML Prediction",
+
             "Live Weather",
+
             "Solar Radiation",
+
             "Last 7 Days Rainfall",
+
             "7 Day Weather Forecast",
-            "Tomorrow Rain Recommendation"
+
+            "Tomorrow Rain Recommendation",
+
+            "India State District Village Selection",
+
+            "Village Latitude Longitude"
         ]
     }
 
@@ -65,9 +190,371 @@ def home():
 def health():
 
     return {
-        "status": "OK",
-        "model": "crop_yield_model_small.pkl",
-        "preprocessor": "preprocessor.pkl"
+
+        "status":
+            "OK",
+
+        "model":
+            "crop_yield_model_small.pkl",
+
+        "preprocessor":
+            "preprocessor.pkl",
+
+        "location_records":
+            len(location_rows)
+    }
+
+
+# =========================================================
+# GET ALL INDIA STATES / UNION TERRITORIES
+# =========================================================
+
+@app.get("/locations/states")
+def get_states():
+
+    states = {}
+
+    for row in location_rows:
+
+        state = row["state"]
+
+        if not state:
+            continue
+
+        key = state.lower()
+
+        if key not in states:
+
+            states[key] = {
+
+                "name": state,
+
+                "code":
+                    row["state_code"]
+            }
+
+    result = sorted(
+        states.values(),
+        key=lambda x: x["name"]
+    )
+
+    return {
+
+        "success":
+            True,
+
+        "count":
+            len(result),
+
+        "states":
+            result
+    }
+
+
+# =========================================================
+# GET ALL DISTRICTS OF SELECTED STATE
+# =========================================================
+
+@app.get("/locations/districts")
+def get_districts(
+    state: str
+):
+
+    state_input = state.strip().lower()
+
+    districts = {}
+
+    for row in location_rows:
+
+        if row["state"].strip().lower() != state_input:
+            continue
+
+        district = row["district"]
+
+        if not district:
+            continue
+
+        key = district.lower()
+
+        if key not in districts:
+
+            districts[key] = {
+
+                "name":
+                    district,
+
+                "code":
+                    row["district_code"]
+            }
+
+    result = sorted(
+        districts.values(),
+        key=lambda x: x["name"]
+    )
+
+    return {
+
+        "success":
+            True,
+
+        "state":
+            state,
+
+        "count":
+            len(result),
+
+        "districts":
+            result
+    }
+
+
+# =========================================================
+# GET ALL VILLAGES OF SELECTED DISTRICT
+# =========================================================
+
+@app.get("/locations/villages")
+def get_villages(
+    state: str,
+    district: str
+):
+
+    state_input = (
+        state.strip().lower()
+    )
+
+    district_input = (
+        district.strip().lower()
+    )
+
+    villages = {}
+
+    for row in location_rows:
+
+        if (
+            row["state"]
+            .strip()
+            .lower()
+            != state_input
+        ):
+            continue
+
+        if (
+            row["district"]
+            .strip()
+            .lower()
+            != district_input
+        ):
+            continue
+
+        village = row["village"]
+
+        if not village:
+            continue
+
+        key = (
+            row["village_code"],
+            village.lower()
+        )
+
+        villages[key] = {
+
+            "name":
+                village,
+
+            "code":
+                row["village_code"],
+
+            "subdistrict":
+                row["subdistrict"],
+
+            "subdistrict_code":
+                row["subdistrict_code"]
+        }
+
+    result = sorted(
+        villages.values(),
+        key=lambda x: x["name"]
+    )
+
+    return {
+
+        "success":
+            True,
+
+        "state":
+            state,
+
+        "district":
+            district,
+
+        "count":
+            len(result),
+
+        "villages":
+            result
+    }
+
+
+# =========================================================
+# VILLAGE GEOCODING
+# =========================================================
+#
+# The village CSV contains:
+# State
+# District
+# Village
+#
+# It does NOT contain latitude / longitude.
+#
+# Therefore we use OpenStreetMap Nominatim to find
+# coordinates for the selected village.
+# =========================================================
+
+@lru_cache(maxsize=5000)
+def geocode_village(
+    village: str,
+    district: str,
+    state: str
+):
+
+    query = (
+        f"{village}, "
+        f"{district}, "
+        f"{state}, India"
+    )
+
+    try:
+
+        response = requests.get(
+
+            "https://nominatim.openstreetmap.org/search",
+
+            params={
+
+                "q":
+                    query,
+
+                "format":
+                    "json",
+
+                "limit":
+                    1,
+
+                "countrycodes":
+                    "in"
+            },
+
+            headers={
+
+                "User-Agent":
+                    "AI-Farm-Assistant/1.0"
+            },
+
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data:
+
+            return None
+
+        return {
+
+            "latitude":
+                float(
+                    data[0]["lat"]
+                ),
+
+            "longitude":
+                float(
+                    data[0]["lon"]
+                ),
+
+            "display_name":
+                data[0].get(
+                    "display_name",
+                    query
+                )
+        }
+
+    except Exception as e:
+
+        print(
+            "Geocoding error:",
+            e
+        )
+
+        return None
+
+
+# =========================================================
+# GET LATITUDE AND LONGITUDE FOR VILLAGE
+# =========================================================
+
+@app.get("/locations/village-location")
+def get_village_location(
+
+    village: str,
+
+    district: str,
+
+    state: str
+):
+
+    result = geocode_village(
+
+        village.strip(),
+
+        district.strip(),
+
+        state.strip()
+    )
+
+    if result is None:
+
+        return {
+
+            "success":
+                False,
+
+            "message":
+                "Coordinates not found for this village.",
+
+            "village":
+                village,
+
+            "district":
+                district,
+
+            "state":
+                state
+        }
+
+    return {
+
+        "success":
+            True,
+
+        "village":
+            village,
+
+        "district":
+            district,
+
+        "state":
+            state,
+
+        "latitude":
+            result["latitude"],
+
+        "longitude":
+            result["longitude"],
+
+        "display_name":
+            result["display_name"]
     }
 
 
@@ -84,16 +571,27 @@ def get_weather(
     try:
 
         url = (
+
             "https://api.open-meteo.com/v1/forecast"
+
             f"?latitude={latitude}"
+
             f"&longitude={longitude}"
+
             "&current="
+
             "temperature_2m,"
+
             "relative_humidity_2m,"
+
             "precipitation,"
+
             "wind_speed_10m,"
+
             "weather_code,"
+
             "shortwave_radiation"
+
             "&timezone=auto"
         )
 
@@ -106,38 +604,50 @@ def get_weather(
                 response.read().decode()
             )
 
-        current = weather_data["current"]
+        current = weather_data[
+            "current"
+        ]
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "location": {
-                "latitude": latitude,
-                "longitude": longitude
+
+                "latitude":
+                    latitude,
+
+                "longitude":
+                    longitude
             },
 
             "weather": {
 
-                "temperature": current.get(
-                    "temperature_2m"
-                ),
+                "temperature":
+                    current.get(
+                        "temperature_2m"
+                    ),
 
-                "humidity": current.get(
-                    "relative_humidity_2m"
-                ),
+                "humidity":
+                    current.get(
+                        "relative_humidity_2m"
+                    ),
 
-                "precipitation": current.get(
-                    "precipitation"
-                ),
+                "precipitation":
+                    current.get(
+                        "precipitation"
+                    ),
 
-                "wind_speed": current.get(
-                    "wind_speed_10m"
-                ),
+                "wind_speed":
+                    current.get(
+                        "wind_speed_10m"
+                    ),
 
-                "weather_code": current.get(
-                    "weather_code"
-                ),
+                "weather_code":
+                    current.get(
+                        "weather_code"
+                    ),
 
                 "solar_radiation_current":
                     current.get(
@@ -145,20 +655,25 @@ def get_weather(
                     )
             },
 
-            "timezone": weather_data.get(
-                "timezone"
-            ),
+            "timezone":
+                weather_data.get(
+                    "timezone"
+                ),
 
-            "updated_at": current.get(
-                "time"
-            )
+            "updated_at":
+                current.get(
+                    "time"
+                )
         }
 
     except Exception as e:
 
         raise HTTPException(
+
             status_code=500,
-            detail=f"Weather API error: {str(e)}"
+
+            detail=
+                f"Weather API error: {str(e)}"
         )
 
 
@@ -168,19 +683,28 @@ def get_weather(
 
 @app.get("/rainfall-7days")
 def get_last_7_days_rainfall(
+
     latitude: float,
+
     longitude: float
 ):
 
     try:
 
         url = (
+
             "https://api.open-meteo.com/v1/forecast"
+
             f"?latitude={latitude}"
+
             f"&longitude={longitude}"
+
             "&daily=precipitation_sum"
+
             "&past_days=7"
+
             "&forecast_days=0"
+
             "&timezone=auto"
         )
 
@@ -217,33 +741,49 @@ def get_last_7_days_rainfall(
 
             rainfall_history.append({
 
-                "date": date,
+                "date":
+                    date,
 
-                "rainfall_mm": round(
-                    float(amount or 0),
-                    2
-                )
+                "rainfall_mm":
+                    round(
+                        float(
+                            amount or 0
+                        ),
+                        2
+                    )
             })
 
         total_rainfall = sum(
+
             item["rainfall_mm"]
-            for item in rainfall_history
+
+            for item
+            in rainfall_history
         )
 
         average_rainfall = (
-            total_rainfall /
+
+            total_rainfall
+            /
             len(rainfall_history)
+
             if rainfall_history
+
             else 0
         )
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "location": {
-                "latitude": latitude,
-                "longitude": longitude
+
+                "latitude":
+                    latitude,
+
+                "longitude":
+                    longitude
             },
 
             "rainfall_history":
@@ -261,7 +801,8 @@ def get_last_7_days_rainfall(
                     2
                 ),
 
-            "unit": "mm",
+            "unit":
+                "mm",
 
             "timezone":
                 rainfall_data.get(
@@ -272,8 +813,11 @@ def get_last_7_days_rainfall(
     except Exception as e:
 
         raise HTTPException(
+
             status_code=500,
-            detail=f"Rainfall API error: {str(e)}"
+
+            detail=
+                f"Rainfall API error: {str(e)}"
         )
 
 
@@ -283,23 +827,36 @@ def get_last_7_days_rainfall(
 
 @app.get("/forecast")
 def get_weather_forecast(
+
     latitude: float,
+
     longitude: float
 ):
 
     try:
 
         url = (
+
             "https://api.open-meteo.com/v1/forecast"
+
             f"?latitude={latitude}"
+
             f"&longitude={longitude}"
+
             "&daily="
+
             "temperature_2m_max,"
+
             "temperature_2m_min,"
+
             "precipitation_sum,"
+
             "precipitation_probability_max,"
+
             "weather_code"
+
             "&forecast_days=7"
+
             "&timezone=auto"
         )
 
@@ -349,39 +906,62 @@ def get_weather_forecast(
 
         forecast = []
 
-        for i in range(len(dates)):
+        for i in range(
+            len(dates)
+        ):
 
             forecast.append({
 
-                "date": dates[i],
+                "date":
+                    dates[i],
 
                 "max_temperature": (
+
                     max_temperatures[i]
-                    if i < len(max_temperatures)
+
+                    if i <
+                    len(max_temperatures)
+
                     else None
                 ),
 
                 "min_temperature": (
+
                     min_temperatures[i]
-                    if i < len(min_temperatures)
+
+                    if i <
+                    len(min_temperatures)
+
                     else None
                 ),
 
                 "precipitation_mm": (
+
                     precipitation[i]
-                    if i < len(precipitation)
+
+                    if i <
+                    len(precipitation)
+
                     else None
                 ),
 
                 "rain_probability": (
+
                     rain_probability[i]
-                    if i < len(rain_probability)
+
+                    if i <
+                    len(rain_probability)
+
                     else None
                 ),
 
                 "weather_code": (
+
                     weather_codes[i]
-                    if i < len(weather_codes)
+
+                    if i <
+                    len(weather_codes)
+
                     else None
                 )
             })
@@ -392,8 +972,11 @@ def get_weather_forecast(
         # =================================================
 
         tomorrow = (
+
             forecast[1]
+
             if len(forecast) > 1
+
             else None
         )
 
@@ -402,18 +985,30 @@ def get_weather_forecast(
         if tomorrow:
 
             precipitation_value = (
-                tomorrow["precipitation_mm"]
+
+                tomorrow[
+                    "precipitation_mm"
+                ]
+
                 or 0
             )
 
             probability_value = (
-                tomorrow["rain_probability"]
+
+                tomorrow[
+                    "rain_probability"
+                ]
+
                 or 0
             )
 
             rain_expected = (
+
                 precipitation_value > 0
-                or probability_value >= 50
+
+                or
+
+                probability_value >= 50
             )
 
 
@@ -423,14 +1018,20 @@ def get_weather_forecast(
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "location": {
-                "latitude": latitude,
-                "longitude": longitude
+
+                "latitude":
+                    latitude,
+
+                "longitude":
+                    longitude
             },
 
-            "tomorrow": tomorrow,
+            "tomorrow":
+                tomorrow,
 
             "tomorrow_rain_expected":
                 rain_expected,
@@ -447,8 +1048,11 @@ def get_weather_forecast(
     except Exception as e:
 
         raise HTTPException(
+
             status_code=500,
-            detail=f"Forecast API error: {str(e)}"
+
+            detail=
+                f"Forecast API error: {str(e)}"
         )
 
 
@@ -459,20 +1063,29 @@ def get_weather_forecast(
 class PredictionRequest(BaseModel):
 
     state: str
+
     district: str
+
     crop: str
 
     area: float
 
     N: float
+
     P: float
+
     K: float
 
     temperature: float
+
     humidity: float
+
     ph: float
+
     rainfall: float
+
     wind_speed: float
+
     solar_radiation: float
 
     soil_type: str
@@ -483,7 +1096,9 @@ class PredictionRequest(BaseModel):
 # =========================================================
 
 @app.post("/predict")
-def predict(data: PredictionRequest):
+def predict(
+    data: PredictionRequest
+):
 
     try:
 
@@ -542,8 +1157,10 @@ def predict(data: PredictionRequest):
         # PREPROCESS
         # -------------------------------------------------
 
-        input_encoded = preprocessor.transform(
-            input_data
+        input_encoded = (
+            preprocessor.transform(
+                input_data
+            )
         )
 
 
@@ -551,9 +1168,11 @@ def predict(data: PredictionRequest):
         # AI PREDICTION
         # -------------------------------------------------
 
-        predicted_yield = model.predict(
-            input_encoded
-        )[0]
+        predicted_yield = (
+            model.predict(
+                input_encoded
+            )[0]
+        )
 
 
         # -------------------------------------------------
@@ -561,7 +1180,9 @@ def predict(data: PredictionRequest):
         # -------------------------------------------------
 
         total_production = (
-            predicted_yield *
+
+            predicted_yield
+            *
             data.area
         )
 
@@ -572,7 +1193,8 @@ def predict(data: PredictionRequest):
 
         return {
 
-            "success": True,
+            "success":
+                True,
 
             "crop":
                 data.crop,
@@ -591,13 +1213,17 @@ def predict(data: PredictionRequest):
 
             "expected_yield_per_hectare":
                 round(
-                    float(predicted_yield),
+                    float(
+                        predicted_yield
+                    ),
                     2
                 ),
 
             "estimated_total_production":
                 round(
-                    float(total_production),
+                    float(
+                        total_production
+                    ),
                     2
                 )
         }
@@ -606,6 +1232,8 @@ def predict(data: PredictionRequest):
     except Exception as e:
 
         raise HTTPException(
+
             status_code=400,
+
             detail=str(e)
         )

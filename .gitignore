@@ -1,5 +1,6 @@
 venv/
 __pycache__/
 *.pyc
-.envlocation_source/
+.env
+location_source/
 location_data/__MACOSX/

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -395,6 +395,9 @@ def get_states():
         "states":
             result
     }
+@app.head("/locations/states")
+def head_states():
+    return Response(status_code=200)
 
 
 # =========================================================

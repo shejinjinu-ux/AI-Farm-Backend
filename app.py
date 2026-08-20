@@ -10,6 +10,7 @@ import urllib.parse
 import json
 import csv
 import os
+import time
 
 from google import genai
 from dotenv import load_dotenv
@@ -23,6 +24,44 @@ app = FastAPI(
     title="AGRIGENIE Backend",
     version="1.0.0"
 )
+# =========================================================
+# WEATHER CACHE
+# =========================================================
+
+WEATHER_CACHE = {}
+FORECAST_CACHE = {}
+RAINFALL_CACHE = {}
+
+WEATHER_CACHE_SECONDS = 600
+FORECAST_CACHE_SECONDS = 1800
+RAINFALL_CACHE_SECONDS = 1800
+
+
+def cache_key(latitude, longitude):
+    return (
+        round(float(latitude), 4),
+        round(float(longitude), 4)
+    )
+
+
+def get_cached(cache, key, max_age):
+    item = cache.get(key)
+
+    if item is None:
+        return None
+
+    if time.time() - item["timestamp"] > max_age:
+        cache.pop(key, None)
+        return None
+
+    return item["data"]
+
+
+def save_cache(cache, key, data):
+    cache[key] = {
+        "timestamp": time.time(),
+        "data": data
+    }
 
 
 # =========================================================
@@ -720,12 +759,27 @@ def get_weather(
     latitude: float,
     longitude: float
 ):
+
+    if latitude == 0 or longitude == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid farm location."
+        )
+
+    key = cache_key(latitude, longitude)
+
+    # Check cache first
+    cached = get_cached(
+        WEATHER_CACHE,
+        key,
+        WEATHER_CACHE_SECONDS
+    )
+
+    if cached is not None:
+        print("Weather served from cache.")
+        return cached
+
     try:
-        if latitude == 0 or longitude == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid farm location."
-            )
 
         url = (
             "https://api.open-meteo.com/v1/forecast"
@@ -744,7 +798,8 @@ def get_weather(
         request = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "AI-Farm-Assistant/1.0"
+                "User-Agent":
+                    "AGRIGENIE/1.0"
             }
         )
 
@@ -762,7 +817,7 @@ def get_weather(
             {}
         )
 
-        return {
+        result = {
             "success": True,
 
             "location": {
@@ -771,58 +826,82 @@ def get_weather(
             },
 
             "weather": {
-                "temperature": current.get(
-                    "temperature_2m"
-                ),
+                "temperature":
+                    current.get(
+                        "temperature_2m"
+                    ),
 
-                "humidity": current.get(
-                    "relative_humidity_2m"
-                ),
+                "humidity":
+                    current.get(
+                        "relative_humidity_2m"
+                    ),
 
-                "precipitation": current.get(
-                    "precipitation"
-                ),
+                "precipitation":
+                    current.get(
+                        "precipitation"
+                    ),
 
-                "wind_speed": current.get(
-                    "wind_speed_10m"
-                ),
+                "wind_speed":
+                    current.get(
+                        "wind_speed_10m"
+                    ),
 
-                "weather_code": current.get(
-                    "weather_code"
-                ),
+                "weather_code":
+                    current.get(
+                        "weather_code"
+                    ),
 
-                "solar_radiation_current": current.get(
-                    "shortwave_radiation"
-                )
+                "solar_radiation_current":
+                    current.get(
+                        "shortwave_radiation"
+                    )
             },
 
-            "timezone": weather_data.get(
-                "timezone"
-            ),
+            "timezone":
+                weather_data.get(
+                    "timezone"
+                ),
 
-            "updated_at": current.get(
-                "time"
-            )
+            "updated_at":
+                current.get(
+                    "time"
+                )
         }
+
+        save_cache(
+            WEATHER_CACHE,
+            key,
+            result
+        )
+
+        print("Weather fetched and cached.")
+
+        return result
 
     except urllib.error.HTTPError as e:
 
         if e.code == 429:
-            print("Weather API rate limit reached.")
+
+            print(
+                "Weather API rate limit reached."
+            )
+
+            cached = WEATHER_CACHE.get(key)
+
+            if cached:
+                return cached["data"]
 
             raise HTTPException(
                 status_code=429,
-                detail="Weather service rate limit reached. Please try again shortly."
+                detail=
+                    "Weather service is temporarily "
+                    "rate limited. Please try again shortly."
             )
-
-        print(
-            "Weather API HTTP error:",
-            e
-        )
 
         raise HTTPException(
             status_code=500,
-            detail=f"Weather API error: {str(e)}"
+            detail=
+                f"Weather API error: {str(e)}"
         )
 
     except Exception as e:
@@ -832,9 +911,15 @@ def get_weather(
             e
         )
 
+        cached = WEATHER_CACHE.get(key)
+
+        if cached:
+            return cached["data"]
+
         raise HTTPException(
             status_code=500,
-            detail=f"Weather API error: {str(e)}"
+            detail=
+                f"Weather API error: {str(e)}"
         )
 # =========================================================
 # LAST 7 DAYS RAINFALL
@@ -985,11 +1070,57 @@ def get_rainfall_7days(
 # 7 DAY WEATHER FORECAST
 # =========================================================
 
+# =========================================================
+# 7 DAY WEATHER FORECAST
+# =========================================================
+
 @app.get("/forecast")
 def get_weather_forecast(
     latitude: float,
     longitude: float
 ):
+
+    # -----------------------------------------------------
+    # INVALID LOCATION CHECK
+    # -----------------------------------------------------
+
+    if latitude == 0 or longitude == 0:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid farm location."
+        )
+
+    # -----------------------------------------------------
+    # CACHE KEY
+    # -----------------------------------------------------
+
+    key = cache_key(
+        latitude,
+        longitude
+    )
+
+    # -----------------------------------------------------
+    # CHECK CACHE
+    # -----------------------------------------------------
+
+    cached = get_cached(
+        FORECAST_CACHE,
+        key,
+        FORECAST_CACHE_SECONDS
+    )
+
+    if cached is not None:
+
+        print(
+            "Forecast served from cache."
+        )
+
+        return cached
+
+    # -----------------------------------------------------
+    # FETCH FORECAST
+    # -----------------------------------------------------
 
     try:
 
@@ -1018,14 +1149,32 @@ def get_weather_forecast(
             "&timezone=auto"
         )
 
-        with urllib.request.urlopen(
+        request = urllib.request.Request(
+
             url,
+
+            headers={
+                "User-Agent":
+                    "AGRIGENIE/1.0"
+            }
+        )
+
+        with urllib.request.urlopen(
+
+            request,
+
             timeout=10
+
         ) as response:
 
             forecast_data = json.loads(
+
                 response.read().decode()
             )
+
+        # -------------------------------------------------
+        # DAILY DATA
+        # -------------------------------------------------
 
         daily = forecast_data.get(
             "daily",
@@ -1037,12 +1186,12 @@ def get_weather_forecast(
             []
         )
 
-        max_temperature = daily.get(
+        max_temperatures = daily.get(
             "temperature_2m_max",
             []
         )
 
-        min_temperature = daily.get(
+        min_temperatures = daily.get(
             "temperature_2m_min",
             []
         )
@@ -1052,7 +1201,7 @@ def get_weather_forecast(
             []
         )
 
-        probability = daily.get(
+        rain_probability = daily.get(
             "precipitation_probability_max",
             []
         )
@@ -1061,6 +1210,10 @@ def get_weather_forecast(
             "weather_code",
             []
         )
+
+        # -------------------------------------------------
+        # BUILD FORECAST
+        # -------------------------------------------------
 
         forecast = []
 
@@ -1074,30 +1227,54 @@ def get_weather_forecast(
                     dates[i],
 
                 "max_temperature":
-                    max_temperature[i]
-                    if i < len(max_temperature)
+
+                    max_temperatures[i]
+
+                    if i <
+                    len(max_temperatures)
+
                     else None,
 
                 "min_temperature":
-                    min_temperature[i]
-                    if i < len(min_temperature)
+
+                    min_temperatures[i]
+
+                    if i <
+                    len(min_temperatures)
+
                     else None,
 
                 "precipitation_mm":
+
                     precipitation[i]
-                    if i < len(precipitation)
+
+                    if i <
+                    len(precipitation)
+
                     else None,
 
                 "rain_probability":
-                    probability[i]
-                    if i < len(probability)
+
+                    rain_probability[i]
+
+                    if i <
+                    len(rain_probability)
+
                     else None,
 
                 "weather_code":
+
                     weather_codes[i]
-                    if i < len(weather_codes)
+
+                    if i <
+                    len(weather_codes)
+
                     else None
             })
+
+        # -------------------------------------------------
+        # TOMORROW FORECAST
+        # -------------------------------------------------
 
         tomorrow = (
 
@@ -1108,17 +1285,29 @@ def get_weather_forecast(
             else None
         )
 
+        # -------------------------------------------------
+        # RAIN EXPECTED TOMORROW?
+        # -------------------------------------------------
+
         rain_expected = False
 
         if tomorrow:
 
             tomorrow_rain = (
-                tomorrow["precipitation_mm"]
+
+                tomorrow[
+                    "precipitation_mm"
+                ]
+
                 or 0
             )
 
             tomorrow_probability = (
-                tomorrow["rain_probability"]
+
+                tomorrow[
+                    "rain_probability"
+                ]
+
                 or 0
             )
 
@@ -1131,7 +1320,11 @@ def get_weather_forecast(
                 tomorrow_probability >= 50
             )
 
-        return {
+        # -------------------------------------------------
+        # FINAL RESPONSE
+        # -------------------------------------------------
+
+        result = {
 
             "success":
                 True,
@@ -1160,14 +1353,107 @@ def get_weather_forecast(
                 )
         }
 
-    except Exception as e:
+        # -------------------------------------------------
+        # SAVE TO CACHE
+        # -------------------------------------------------
+
+        save_cache(
+
+            FORECAST_CACHE,
+
+            key,
+
+            result
+        )
+
+        print(
+            "Forecast fetched and cached."
+        )
+
+        return result
+
+    # -----------------------------------------------------
+    # RATE LIMIT ERROR
+    # -----------------------------------------------------
+
+    except urllib.error.HTTPError as e:
+
+        if e.code == 429:
+
+            print(
+                "Forecast API rate limit reached."
+            )
+
+            # Try old cache even if expired
+            old_cache = FORECAST_CACHE.get(
+                key
+            )
+
+            if old_cache:
+
+                print(
+                    "Returning previously cached forecast."
+                )
+
+                return old_cache[
+                    "data"
+                ]
+
+            raise HTTPException(
+
+                status_code=429,
+
+                detail=
+                    "Forecast service is temporarily "
+                    "rate limited. Please try again shortly."
+            )
+
+        print(
+            "Forecast API HTTP error:",
+            e
+        )
 
         raise HTTPException(
+
             status_code=500,
+
             detail=
                 f"Forecast API error: {str(e)}"
         )
 
+    # -----------------------------------------------------
+    # OTHER ERROR
+    # -----------------------------------------------------
+
+    except Exception as e:
+
+        print(
+            "Forecast API error:",
+            e
+        )
+
+        # Return old cached data if available
+        old_cache = FORECAST_CACHE.get(
+            key
+        )
+
+        if old_cache:
+
+            print(
+                "Returning previously cached forecast."
+            )
+
+            return old_cache[
+                "data"
+            ]
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=
+                f"Forecast API error: {str(e)}"
+        )
 
 # =========================================================
 # YIELD PREDICTION REQUEST

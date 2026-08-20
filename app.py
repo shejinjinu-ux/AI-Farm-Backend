@@ -720,36 +720,36 @@ def get_weather(
     latitude: float,
     longitude: float
 ):
-
     try:
+        if latitude == 0 or longitude == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid farm location."
+            )
 
         url = (
-
             "https://api.open-meteo.com/v1/forecast"
-
             f"?latitude={latitude}"
-
             f"&longitude={longitude}"
-
             "&current="
-
             "temperature_2m,"
-
             "relative_humidity_2m,"
-
             "precipitation,"
-
             "wind_speed_10m,"
-
             "weather_code,"
-
             "shortwave_radiation"
-
             "&timezone=auto"
         )
 
-        with urllib.request.urlopen(
+        request = urllib.request.Request(
             url,
+            headers={
+                "User-Agent": "AI-Farm-Assistant/1.0"
+            }
+        )
+
+        with urllib.request.urlopen(
+            request,
             timeout=10
         ) as response:
 
@@ -763,62 +763,67 @@ def get_weather(
         )
 
         return {
-
-            "success":
-                True,
+            "success": True,
 
             "location": {
-
-                "latitude":
-                    latitude,
-
-                "longitude":
-                    longitude
+                "latitude": latitude,
+                "longitude": longitude
             },
 
             "weather": {
-
-                "temperature":
-                    current.get(
-                        "temperature_2m"
-                    ),
-
-                "humidity":
-                    current.get(
-                        "relative_humidity_2m"
-                    ),
-
-                "precipitation":
-                    current.get(
-                        "precipitation"
-                    ),
-
-                "wind_speed":
-                    current.get(
-                        "wind_speed_10m"
-                    ),
-
-                "weather_code":
-                    current.get(
-                        "weather_code"
-                    ),
-
-                "solar_radiation_current":
-                    current.get(
-                        "shortwave_radiation"
-                    )
-            },
-
-            "timezone":
-                weather_data.get(
-                    "timezone"
+                "temperature": current.get(
+                    "temperature_2m"
                 ),
 
-            "updated_at":
-                current.get(
-                    "time"
+                "humidity": current.get(
+                    "relative_humidity_2m"
+                ),
+
+                "precipitation": current.get(
+                    "precipitation"
+                ),
+
+                "wind_speed": current.get(
+                    "wind_speed_10m"
+                ),
+
+                "weather_code": current.get(
+                    "weather_code"
+                ),
+
+                "solar_radiation_current": current.get(
+                    "shortwave_radiation"
                 )
+            },
+
+            "timezone": weather_data.get(
+                "timezone"
+            ),
+
+            "updated_at": current.get(
+                "time"
+            )
         }
+
+    except urllib.error.HTTPError as e:
+
+        if e.code == 429:
+            print("Weather API rate limit reached.")
+
+            raise HTTPException(
+                status_code=429,
+                detail="Weather service rate limit reached. Please try again shortly."
+            )
+
+        print(
+            "Weather API HTTP error:",
+            e
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Weather API error: {str(e)}"
+        )
 
     except Exception as e:
 
@@ -829,11 +834,8 @@ def get_weather(
 
         raise HTTPException(
             status_code=500,
-            detail=
-                f"Weather API error: {str(e)}"
+            detail=f"Weather API error: {str(e)}"
         )
-
-
 # =========================================================
 # LAST 7 DAYS RAINFALL
 # =========================================================
